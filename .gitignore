@@ -1,0 +1,29 @@
+# ============================================================
+# JADCO CONFIDENTIAL CRM DATA — NEVER COMMIT
+# ============================================================
+data/raw/
+data/processed/
+*.csv
+
+# Environment / secrets
+.env
+.env.*
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Model artifacts
+*.pkl
+*.joblib
