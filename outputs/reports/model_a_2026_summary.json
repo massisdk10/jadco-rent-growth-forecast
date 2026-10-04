@@ -1,0 +1,121 @@
+{
+  "method_name": "Model A — Hybrid Transition Intelligence",
+  "forecast_year": 2026,
+  "prediction_origin": "2025-12-31",
+  "target_definition": "P1_median_transition_contribution_effective_annualized",
+  "target_name": "Indice médian de contribution attendue des transitions à la croissance annualisée du loyer effectif des unités à échéance.",
+  "predicted_growth": 2.4436448124776575,
+  "forecast": {
+    "low": 0.7823184313875173,
+    "base": 2.4436448124776575,
+    "high": 4.104971193567797,
+    "unit": "pourcentage"
+  },
+  "cohort": {
+    "n_units": 931,
+    "province": {
+      "Quebec": 810,
+      "Ontario": 121
+    },
+    "building": {
+      "Saint-Elzear": 268,
+      "Le Carlyle": 180,
+      "Westpark": 159,
+      "Daniel-Johnson": 128,
+      "The Met": 121,
+      "Levesque": 75
+    },
+    "expiry_month": {
+      "1": 38,
+      "2": 52,
+      "3": 65,
+      "4": 62,
+      "5": 91,
+      "6": 143,
+      "7": 90,
+      "8": 91,
+      "9": 108,
+      "10": 61,
+      "11": 69,
+      "12": 61
+    },
+    "bedrooms": {
+      "2": 544,
+      "1": 316,
+      "0": 49,
+      "3": 22
+    },
+    "bedrooms_small_groups_units": 0,
+    "segment_interpretation": "Modèle au niveau portefeuille : les segments décrivent la composition et ne modifient pas la prédiction."
+  },
+  "architecture": {
+    "occurrence_method": "historical_global",
+    "growth_method": "historical_median",
+    "recency_variant": {
+      "occurrence": "equal",
+      "growth": "equal"
+    },
+    "feature_set": "core"
+  },
+  "components": {
+    "historical_transition_probability": 0.9523608768971332,
+    "historical_conditional_growth": 0.02565881139972113,
+    "contribution_fraction": 0.024436448124776574,
+    "unit": "fractions",
+    "constant_across_units": true,
+    "n_history_occurrence": 2372,
+    "n_transitions": 2259,
+    "n_non_transitions": 113,
+    "pending_labels": 782,
+    "n_history_growth": 2259,
+    "growth_q05_pct": -5.229188135023457,
+    "growth_q95_pct": 11.254719764539216,
+    "history_year_min": 2018,
+    "history_year_max": 2025,
+    "qualification": "Baux commencés et signés à D ; labels mûrs selon début/signature/fin ; années historiques antérieures à 2026."
+  },
+  "runner_up_sensitivity": {
+    "forecast_pct": 2.6529648338018834,
+    "difference_pp": 0.2093200213242259,
+    "configuration": {
+      "occurrence_method": "historical_global",
+      "growth_method": "historical_mean",
+      "recency_variant": {
+        "occurrence": "equal",
+        "growth": "equal"
+      },
+      "feature_set": "core"
+    },
+    "interpretation": "Sensibilité moyenne versus médiane ; ne remplace pas le champion."
+  },
+  "uncertainty": {
+    "LOW": 0.7823184313875173,
+    "BASE": 2.4436448124776575,
+    "HIGH": 4.104971193567797,
+    "bootstrap_q10_pct": 2.4436448124776575,
+    "bootstrap_q90_pct": 2.4436448124776575,
+    "signed_errors_pp": [
+      0.8339574018200802,
+      1.6613263810901402,
+      -0.33155057616509387
+    ],
+    "model_error_radius_pp": 1.6613263810901402,
+    "n_bootstrap": 1000,
+    "random_state": 42,
+    "interpretation": "Scénarios de composition + enveloppe empirique ; aucun niveau de confiance garanti",
+    "risk_factors": [
+      "Dérive du taux de transition observée en 2025",
+      "Dépendance entre unités/bâtiments non modélisée"
+    ],
+    "bootstrap_width_pp": 0.0,
+    "method": "LOW=q10−E ; BASE=P1 ; HIGH=q90+E ; E=max des erreurs absolues 2023/2024/2025",
+    "not_captured": [
+      "Dérive future",
+      "Changements réglementaires",
+      "Dépendance entre unités",
+      "Erreur structurelle nouvelle",
+      "Révisions CRM"
+    ],
+    "bootstrap_explanation": "Le bootstrap transversal n'ajoute pas de largeur car le champion applique une contribution identique à chaque unité ; l'incertitude présentée provient donc de l'erreur historique de backtest."
+  }
+}

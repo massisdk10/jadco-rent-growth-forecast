@@ -1,0 +1,90 @@
+{
+  "method_name": "Model A — Hybrid Transition Intelligence",
+  "target_definition": "P1_median_transition_contribution_effective_annualized",
+  "architecture": {
+    "occurrence_method": "historical_global",
+    "growth_method": "historical_median",
+    "recency_variant": {
+      "occurrence": "equal",
+      "growth": "equal"
+    },
+    "feature_set": "core"
+  },
+  "backtest_by_year": {
+    "2023": {
+      "year": 2023,
+      "prediction_origin": "2022-12-31",
+      "predicted_P1_pct": 2.8700597508977657,
+      "realized_P1_pct": 2.0361023490776855,
+      "error_pp": 0.8339574018200802,
+      "absolute_error_pp": 0.8339574018200802,
+      "candidate_units": 405,
+      "observed_units": 401,
+      "n_train_occurrence": 897,
+      "n_train_growth": 882,
+      "pending_labels": 351,
+      "occurrence_brier": 0.009825862969190972,
+      "configuration": {
+        "occurrence_method": "historical_global",
+        "growth_method": "historical_median",
+        "recency_variant": {
+          "occurrence": "equal",
+          "growth": "equal"
+        },
+        "feature_set": "core"
+      }
+    },
+    "2024": {
+      "year": 2024,
+      "prediction_origin": "2023-12-31",
+      "predicted_P1_pct": 3.2691787873371383,
+      "realized_P1_pct": 1.607852406246998,
+      "error_pp": 1.6613263810901402,
+      "absolute_error_pp": 1.6613263810901402,
+      "candidate_units": 645,
+      "observed_units": 634,
+      "n_train_occurrence": 1246,
+      "n_train_growth": 1227,
+      "pending_labels": 407,
+      "occurrence_brier": 0.01676667537271483,
+      "configuration": {
+        "occurrence_method": "historical_global",
+        "growth_method": "historical_median",
+        "recency_variant": {
+          "occurrence": "equal",
+          "growth": "equal"
+        },
+        "feature_set": "core"
+      }
+    },
+    "2025": {
+      "year": 2025,
+      "prediction_origin": "2024-12-31",
+      "predicted_P1_pct": 2.9693278810997157,
+      "realized_P1_pct": 3.3008784572648096,
+      "error_pp": -0.33155057616509387,
+      "absolute_error_pp": 0.33155057616509387,
+      "candidate_units": 856,
+      "observed_units": 773,
+      "n_train_occurrence": 1657,
+      "n_train_growth": 1627,
+      "pending_labels": 641,
+      "occurrence_brier": 0.09377939006457195,
+      "configuration": {
+        "occurrence_method": "historical_global",
+        "growth_method": "historical_median",
+        "recency_variant": {
+          "occurrence": "equal",
+          "growth": "equal"
+        },
+        "feature_set": "core"
+      }
+    }
+  },
+  "aggregate_metrics": {
+    "mae_pp": 0.9422781196917714,
+    "rmse_pp": 1.0901706406356706,
+    "bias_pp": 0.7212444022483755,
+    "worst_year_pp": 1.6613263810901402
+  }
+}
