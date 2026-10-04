@@ -1,0 +1,70 @@
+# Plan d’intégration des données externes — JADCO / Collection Équinoxe
+
+## Périmètre et décisions conservées
+
+Ce plan s’appuie sur le starter officiel et les conclusions des notebooks 01 à 04. Il définit les données à rechercher ultérieurement, sans recherche web, téléchargement, valeurs externes, modèle ou backtest. Les séries exactes, leur disponibilité historique et leurs dates de publication restent **à vérifier auprès des organismes officiels** ; aucun numéro de tableau ni calendrier de diffusion n’est présumé.
+
+La cible reste la croissance same-unit sur `UNIT_KEY = (sPropCode, sUnitCode)`, ordonnée par `sLeaseFrom`. Contractuel et effectif restent séparés ; l’effectif fourni est la recommandation économique provisoire, avec confiance modérée, et le contractuel demeure indispensable en complément. Aucune conversion universelle, annualisation définitive ou pondération finale du portefeuille n’est retenue. Renouvellements, relocations, bâtiments et provinces doivent rester identifiables. Ne pas confondre neuf codes de propriété et six identifiants de bâtiment.
+
+## Contrat commun et disponibilité temporelle
+
+Pour chaque observation externe, conserver au minimum : `variable`, organisme et référence officielle vérifiée, définition/population, `geo_code`, géographie, segment de chambres si applicable, début/fin de période observée, fréquence, unité, valeur, **date de publication**, version et date de publication de cette version, date de collecte et, pour les paramètres réglementaires, année/période d’application et périmètre d’applicabilité. La date de collecte ne remplace jamais la date de disponibilité historique.
+
+Fenêtre souhaitée : observations **2016–2025** pour contextualiser les transitions historiques 2017–2025, avec une année antérieure supplémentaire si nécessaire au calcul d’une variation annuelle. Pour préparer une prédiction de 2026, seules les publications disponibles à la coupure retenue seraient admissibles, sans exiger que toutes les séries couvrent déjà 2025. Les paramètres réglementaires souhaités couvrent les années d’application 2017–2026, sous la même contrainte de disponibilité. Une série plus courte conserve sa couverture réelle.
+
+Convention proposée pour le futur protocole annuel : prédiction de l’année **Y au 31 décembre de Y−1**. Une autre origine éventuelle devra être explicitement documentée avant validation. Une observation/version est admissible uniquement si sa date de publication est au plus tard la coupure. Une date inconnue rend la valeur inadmissible à un backtest strict, même si sa période de référence est ancienne.
+
+| Variable candidate | Source officielle souhaitée | Géographie et segment JADCO | Fréquence, années et unité | Disponibilité à établir | Justification et utilisation potentielle | Risque de leakage spécifique |
+|---|---|---|---|---|---|---|
+| `schl_rent_growth` — croissance des loyers du marché locatif | SCHL/CMHC, Enquête sur les logements locatifs | RMR de Montréal et marché d’Ottawa pertinent pour The Met ; chambres correspondant à `sBeds` si disponibles ; tous mécanismes, avec segmentation à tester | Annuelle souhaitée ; fenêtre commune ci-dessus ; % annuel | Date réelle de diffusion de chaque enquête/version | Repère de pression sur les prix ; privilégier une variation officielle sur un échantillon comparable lorsque disponible, pour limiter le mix effect | Enquête publiée après la coupure, échantillon révisé ou croissance calculée avec un niveau futur |
+| `schl_vacancy_rate` — taux d’inoccupation du marché | SCHL/CMHC, même enquête | Mêmes marchés et chambres si disponibles ; surtout contexte des relocations et concessions, sans exclure les renouvellements | Annuelle souhaitée ; 2016–2025 ; % | Date réelle de diffusion/version, distincte de la période d’enquête | Indicateur de tension et de pouvoir de négociation ; contexte externe, **jamais estimation de l’inoccupation JADCO** | Utilisation du taux observé pendant Y mais publié après l’origine de prédiction |
+| `statcan_rent_cpi` — IPC, composante loyers | Statistique Canada, IPC officiel | Québec pour les propriétés québécoises, Ontario pour The Met | Mensuelle souhaitée ; 2016–2025 et antériorité requise ; indice avec base documentée, variation sur 12 mois en % candidate | Date de diffusion de chaque mois/version | Repère provincial de variation des loyers ; tester la dernière variation sur 12 mois publiée à la coupure | Décembre ou moyenne annuelle non encore publiés ; révisions ultérieures ; indexation incompatible entre versions |
+| `tal_parameters` — paramètres historiques applicables aux ajustements | Tribunal administratif du logement, documentation annuelle officielle | Québec seulement ; pertinence à examiner principalement pour les renouvellements | Annuelle souhaitée ; années d’application 2017–2026 ; unités propres à chaque paramètre (% notamment), sans les agréger en taux unique | Date d’annonce et année d’application vérifiées séparément | Contexte du mécanisme d’ajustement ; retenir un sous-ensemble documenté pertinent, sans calculer une hausse légale individuelle à partir d’informations immobilières absentes | Paramètres de Y annoncés après le 31 décembre Y−1 ; utilisation rétrospective de règles modifiées |
+| `ontario_guideline` — rent increase guideline historique | Gouvernement de l’Ontario, publication officielle | Ontario, The Met seulement ; surtout renouvellements, **applicabilité à vérifier** | Annuelle souhaitée ; années d’application 2017–2026 ; % | Date d’annonce, période d’application et version historique vérifiées | Contexte provincial distinct ; tester son association avec les renouvellements si le champ d’application est établi, sans en faire un plafond automatique | Taux annoncé après la coupure, règles actuelles appliquées au passé, statut d’applicabilité établi avec une information future |
+| `schl_mean_rent` — loyer moyen de marché | SCHL/CMHC, même enquête | Marchés/chambres cohérents avec `schl_rent_growth` ; tous segments | Annuelle souhaitée ; 2016–2025 ; $/mois, définition et inclusion d’avantages à vérifier | Date réelle de diffusion/version | Contexte de niveau ou positionnement relatif ; pas une cible same-unit ni une conversion du loyer effectif | Moyenne future, évolution du mix et définition de loyer incompatible avec JADCO |
+| `statcan_all_items_cpi` — IPC général | Statistique Canada, IPC officiel | Québec/Ontario ; série nationale seulement comme contexte commun explicitement distinct | Mensuelle souhaitée ; même fenêtre que l’IPC loyers ; indice et variation sur 12 mois en % candidate | Date réelle de diffusion/version | Tester si l’inflation générale apporte une information supplémentaire à l’IPC loyers ; éviter la redondance | Mois futurs, moyenne annuelle calculée sur des mois non publiés, sélection après observation des résultats de validation |
+| `schl_turnover_rent_context` — loyers/variations selon changement de locataire | SCHL/CMHC, ventilations officielles de l’enquête si elles existent pour les marchés recherchés | Marchés/chambres compatibles ; distinguer changement de locataire et absence de changement | Annuelle souhaitée ; couverture réelle dans 2016–2025 ; $/mois ou % selon série vérifiée | Date de diffusion de la ventilation, pas seulement du rapport principal | Contexte plus proche de renewal/relocation ; définition externe à rapprocher de `sRenewal`, sans supposer leur équivalence exacte | Ventilation apparue tardivement, redéfinition historique, disponibilité rétroactive supposée |
+
+## Alignement avec JADCO
+
+- **Géographie :** établir ultérieurement une correspondance contrôlée `sPropCode` / `hBuilding` / `sCity` / `sState` vers les codes géographiques officiels. Pour Laval, Mont-Royal et Pointe-Claire, vérifier le rattachement et les limites historiques de la RMR de Montréal. Ne pas inventer une série Laval si elle n’existe pas ; une sous-zone locale serait seulement un raffinement à tester. Pour Ottawa, privilégier le périmètre ontarien pertinent ; une série englobant aussi Gatineau doit signaler ce mélange et ne pas recevoir les règles réglementaires ontariennes sur tout son périmètre.
+- **Chambres et population :** rapprocher `sBeds` des catégories officielles, en documentant notamment studios et « trois chambres et plus ». Conserver les univers d’enquête, changements de définition et effectifs/qualité publiés lorsqu’ils existent. Les loyers de marché peuvent refléter un stock et des conventions différents des unités JADCO ; leur association à la croissance effective est une hypothèse à tester.
+- **Temps :** rattacher les variables au moyen d’une jointure par géographie/segment et **disponibilité avant l’origine de prédiction**, pas simplement par année de référence ou par année du nouveau bail. Pour une prédiction annuelle Y, les mêmes informations connues à la coupure s’appliquent aux transitions ciblées en Y. Un protocole ultérieur par date de bail nécessiterait sa propre coupure et ne doit pas se mélanger au protocole annuel.
+- **Fréquences :** une enquête annuelle reste annuelle ; pas d’interpolation mensuelle automatique. Pour l’IPC, utiliser le dernier mois réellement publié et conserver sa période/ancienneté. Ne calculer une moyenne annuelle que si tous ses mois étaient publiés. Une valeur ancienne utilisée comme indicateur retardé doit être nommée comme telle : elle ne remplace pas une observation manquante de l’année Y.
+- **Architecture provinciale :** bloc de contexte de marché SCHL, bloc macro provincial, bloc Québec/TAL ou bloc Ontario. Les paramètres de l’autre province sont **non applicables**, pas zéro. Le statut d’applicabilité réglementaire doit rester « inconnu » tant qu’il n’est pas établi à partir d’informations vérifiées disponibles à la coupure ; la première année observée d’un bail n’établit pas ce statut. Ne jamais appliquer automatiquement TAL à Ottawa ni le guideline ontarien aux propriétés québécoises.
+
+## Protocole anti-leakage pour une validation future
+
+Exemple : un backtest 2024 proposé au 31 décembre 2023 ne peut utiliser une statistique diffusée en 2024 ou 2025, même intitulée « 2023 ». Un paramètre applicable en 2024 mais annoncé après la coupure reste manquant pour cette prédiction. Aucune valeur ou date de diffusion précise n’est affirmée ici.
+
+Utiliser la **version qui était connue à la coupure**, et non la dernière version révisée téléchargée aujourd’hui. Si la version historique est introuvable, documenter la limite et ne pas présenter l’évaluation comme strictement réalisée avec l’information d’époque. Chaque variable future devra avoir un journal de disponibilité, de version, de jointure et de couverture par année/province.
+
+Ne pas remplir artificiellement les trous, recopier une valeur future vers le passé, remplacer une zone absente par une autre sans justification, ni imputer zéro aux paramètres inconnus. Garder les manquants et leurs raisons ; adapter le périmètre ou retirer la variable si sa disponibilité ne permet pas une comparaison défendable.
+
+Les variables et transformations seront sélectionnées sur les seules périodes d’entraînement de chaque future validation. Les informations internes du nouveau bail — renouvellement, concessions, loyer effectif — ne deviennent pas des prédicteurs disponibles avant signature par simple présence dans le CSV. Leur disponibilité doit être vérifiée au même titre que celle des sources externes. Les dates futures déjà présentes dans les données brutes ne prouvent pas une connaissance historique de ces données.
+
+Enfin, quelques séries annuelles répétées sur des milliers de paires ne constituent pas des milliers d’observations externes indépendantes. Conserver un petit ensemble, tenir compte des années communes et éviter de conclure à une causalité ou de sélectionner les variables sur une corrélation globale.
+
+## PRIORITÉ 1 — À INTÉGRER ABSOLUMENT
+
+« À intégrer » signifie rechercher et qualifier en premier ; une disponibilité historique non prouvée interdit l’utilisation dans un backtest strict.
+
+- **`schl_rent_growth` :** fournit un repère de pression locative externe à comparer aux croissances same-unit, sous une définition de variation suffisamment comparable.
+- **`schl_vacancy_rate` :** mérite d’être testé comme contexte de tension du marché susceptible d’être associé aux relocations et concessions.
+- **`statcan_rent_cpi` :** apporte un contexte provincial de variation des loyers, avec une fréquence potentiellement plus fine que l’enquête annuelle.
+- **`tal_parameters` :** permet de contextualiser séparément les ajustements québécois, avec dates d’annonce et limites d’applicabilité explicites.
+- **`ontario_guideline` :** permet d’examiner un mécanisme ontarien distinct pour The Met, sans supposer qu’il s’applique automatiquement à ses baux.
+
+## PRIORITÉ 2 — À TESTER SI DISPONIBLE
+
+- **`schl_mean_rent` :** repère de positionnement par marché/chambres, à conserver seulement s’il ajoute une information au signal de croissance.
+- **`statcan_all_items_cpi` :** contexte macro à tester pour son apport supplémentaire, sans multiplier des séries d’inflation redondantes.
+- **`schl_turnover_rent_context` :** ventilation potentiellement utile aux mécanismes de renouvellement/relocation, seulement si définition et couverture historique sont compatibles.
+
+## À ÉVITER / FAIBLE VALEUR
+
+- Multiplier les sous-zones ou indicateurs sans couverture suffisante ni justification économique supplémentaire.
+- Traiter un loyer moyen ou sa variation de composition comme une croissance same-unit, ou comme un loyer net équivalent à `sRentEffective`.
+- Déduire l’occupation, l’inoccupation, l’absorption ou le rôle total du portefeuille JADCO depuis l’extrait ou depuis le taux d’un marché externe.
+- Utiliser une règle réglementaire comme plafond automatique sans vérification du champ d’application ; appliquer une province à l’autre.
+- Importer des séries futures, révisées sans historique de versions, ou sans date de publication vérifiable ; interpoler les données manquantes pour fabriquer de la continuité.
