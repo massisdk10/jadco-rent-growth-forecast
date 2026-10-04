@@ -32,6 +32,7 @@ from src.features.model_dataset import (
     validate_features,
 )
 from src.models.model_b.growth import GrowthConfig, HierarchicalGrowthEstimator
+from src.models.model_b.model import ModelB, aggregate_p1, assemble_predictions
 from src.models.model_b.occurrence import (
     HierarchicalOccurrenceEstimator,
     OccurrenceConfig,
@@ -603,3 +604,247 @@ def run_occurrence_tournament(
         )
     summary = pd.DataFrame(summary_rows, columns=OCCURRENCE_SUMMARY_COLUMNS)
     return results, summary
+
+
+P1_OCCURRENCE_CONFIG = OccurrenceConfig(
+    hierarchy=(("province",), ("province", "expiry_month")),
+    shrinkage_strength=20.0,
+)
+P1_GROWTH_CONFIG = GrowthConfig(
+    hierarchy=(("province",),),
+    shrinkage_strength=1.0,
+)
+P1_COMBINATIONS = {
+    "P0_G0": ("historical_global", "previous_year_median"),
+    "P0_G1": ("historical_global", "hierarchical_province"),
+    "P1_G0": ("hierarchical_province_expiry_month", "previous_year_median"),
+    "P1_G1": ("hierarchical_province_expiry_month", "hierarchical_province"),
+}
+P1_TOURNAMENT_COLUMNS = (
+    "year",
+    "model_name",
+    "candidate_count",
+    "predicted_P1_percent",
+    "observed_P1_percent",
+    "error_pp",
+    "absolute_error_pp",
+    "predicted_occurrence_rate",
+    "observed_occurrence_rate",
+    "predicted_conditional_growth_percent",
+    "observed_conditional_growth_percent",
+)
+P1_SUMMARY_COLUMNS = (
+    "model_name",
+    "p1_mae_pp",
+    "p1_rmse_pp",
+    "p1_bias_pp",
+    "worst_absolute_yearly_error_pp",
+    "p1_mae_rank",
+    "p1_rmse_rank",
+    "p1_bias_rank",
+    "worst_absolute_error_rank",
+)
+
+
+def _p1_growth_training(
+    leases: pd.DataFrame, train: pd.DataFrame, year: int
+) -> pd.DataFrame:
+    """Build historical growth features at each transition's own origin."""
+    return _growth_model_train(leases, train, year, ("province",))
+
+
+def _p1_tournament_summary(results: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for model_name, group in results.groupby("model_name", sort=False):
+        errors = pd.to_numeric(group["error_pp"], errors="coerce").dropna()
+        rows.append(
+            {
+                "model_name": model_name,
+                "p1_mae_pp": errors.abs().mean(),
+                "p1_rmse_pp": (
+                    float(np.sqrt(np.mean(np.square(errors))))
+                    if not errors.empty
+                    else np.nan
+                ),
+                "p1_bias_pp": errors.mean(),
+                "worst_absolute_yearly_error_pp": errors.abs().max(),
+            }
+        )
+    summary = pd.DataFrame(rows)
+    for metric, rank in (
+        ("p1_mae_pp", "p1_mae_rank"),
+        ("p1_rmse_pp", "p1_rmse_rank"),
+        ("p1_bias_pp", "p1_bias_rank"),
+        ("worst_absolute_yearly_error_pp", "worst_absolute_error_rank"),
+    ):
+        values = summary[metric].abs() if metric == "p1_bias_pp" else summary[metric]
+        summary[rank] = values.rank(method="min", ascending=True).astype("Int64")
+    return summary.loc[:, list(P1_SUMMARY_COLUMNS)]
+
+
+def run_p1_combination_tournament(
+    leases: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Evaluate the four shortlisted occurrence-growth combinations on 2023-25.
+
+    All cutoff-time fits and candidate predictions are completed before the
+    first target-year outcome is revealed. Cohorts, cutoff snapshots, labels,
+    baselines, and P1 aggregation are delegated to the frozen foundation.
+    """
+    evaluation_data, _ = build_model_dataset(leases)
+    predictions_by_year: list[dict[str, object]] = []
+
+    for year in BACKTEST_YEARS:
+        origin = prediction_origin(year)
+        history = occurrence_history(leases, year)
+        occurrence_features, occurrence_target = _qualified_training(history)
+        if occurrence_target.empty:
+            raise ValueError(
+                f"No qualified occurrence history for cutoff {origin.date()}."
+            )
+
+        historical, _ = build_model_dataset(known_leases(leases, origin))
+        growth_train, _ = split_year(historical, year, MAIN_TARGET)
+        if growth_train.empty:
+            raise ValueError(f"No eligible growth history for prediction year {year}.")
+
+        cohort = build_prediction_cohort(leases, year)
+        if cohort.empty:
+            raise ValueError(f"No candidate units for prediction year {year}.")
+        candidate_index = pd.MultiIndex.from_frame(cohort.loc[:, list(UNIT_KEY)])
+
+        occurrence_candidates = build_occurrence_features(leases, cohort, year)
+        occurrence_candidates.index = candidate_index
+        growth_candidates = build_features(
+            leases, cohort, year, features=("province",)
+        )
+        growth_candidates.index = candidate_index
+
+        growth_model_train = _p1_growth_training(leases, growth_train, year)
+        growth_model_train.index = pd.RangeIndex(len(growth_model_train))
+        growth_target = growth_model_train[MAIN_TARGET].rename(MAIN_TARGET)
+        growth_features = growth_model_train.loc[:, ["province"]]
+
+        # Fix all component predictions before any target-year labels are built.
+        occurrence_model = HierarchicalOccurrenceEstimator(P1_OCCURRENCE_CONFIG).fit(
+            occurrence_features, occurrence_target
+        )
+        occurrence_hierarchical = occurrence_model.predict_proba(
+            occurrence_candidates
+        )
+        occurrence_baseline = predict_occurrence(
+            history,
+            occurrence_candidates,
+            method="historical_global",
+        )
+
+        growth_model = HierarchicalGrowthEstimator(P1_GROWTH_CONFIG).fit(
+            growth_features, growth_target
+        )
+        growth_hierarchical = growth_model.predict(growth_candidates)
+        previous_year_growth = baseline_previous_year(
+            growth_train, year, MAIN_TARGET
+        )
+        if not np.isfinite(previous_year_growth):
+            raise ValueError(
+                f"Previous-year growth baseline is unavailable for {year}."
+            )
+        growth_baseline = np.full(len(cohort), previous_year_growth, dtype=float)
+
+        component_predictions = {
+            "P0_G0": (occurrence_baseline, growth_baseline),
+            "P0_G1": (occurrence_baseline, growth_hierarchical),
+            "P1_G0": (occurrence_hierarchical, growth_baseline),
+            "P1_G1": (occurrence_hierarchical, growth_hierarchical),
+        }
+        for model_name, (probabilities, growth_values) in component_predictions.items():
+            assembled = assemble_predictions(
+                probabilities,
+                growth_values,
+                index=candidate_index,
+            )
+            predictions_by_year.append(
+                {
+                    "year": year,
+                    "model_name": model_name,
+                    "cohort": cohort.loc[:, list(UNIT_KEY)].copy(),
+                    "predictions": assembled,
+                    "candidate_count": len(cohort),
+                    "predicted_occurrence_rate": float(np.mean(probabilities)),
+                    "predicted_conditional_growth_percent": float(
+                        100.0 * np.median(growth_values)
+                    ),
+                }
+            )
+
+    rows: list[dict[str, object]] = []
+    for year in BACKTEST_YEARS:
+        fold_predictions = [
+            prediction
+            for prediction in predictions_by_year
+            if prediction["year"] == year
+        ]
+        if len(fold_predictions) != len(P1_COMBINATIONS):
+            raise ValueError(f"Expected four frozen combinations for {year}.")
+        cohort = fold_predictions[0]["cohort"]
+        expected_index = pd.MultiIndex.from_frame(cohort.loc[:, list(UNIT_KEY)])
+        for prediction in fold_predictions:
+            if not prediction["predictions"].index.equals(expected_index):
+                raise ValueError(
+                    "Predictions are not aligned to candidate unit keys."
+                )
+
+        target_year_transitions, _ = build_model_dataset(
+            known_leases(leases, pd.Timestamp(year=year, month=12, day=31))
+        )
+        observed = reveal_occurrence(cohort, target_year_transitions, year)
+        labels = observed["occurrence_target"].to_numpy(dtype=float)
+        observed_growth = pd.to_numeric(
+            observed["unit_growth"], errors="coerce"
+        ).to_numpy(dtype=float)
+        observed_contribution = np.where(
+            labels == 1.0, observed_growth, 0.0
+        )
+        observed_p1 = aggregate_expected_contribution(
+            np.ones(len(cohort), dtype=float), observed_contribution
+        )
+        qualified_labels = np.isfinite(labels)
+        observed_occurrence_rate = (
+            float(np.mean(labels[qualified_labels]))
+            if qualified_labels.any()
+            else np.nan
+        )
+        positive_growth = observed_growth[(labels == 1.0) & np.isfinite(observed_growth)]
+        observed_conditional_growth = (
+            float(100.0 * np.median(positive_growth))
+            if positive_growth.size
+            else np.nan
+        )
+
+        for prediction in fold_predictions:
+            model_predictions = prediction["predictions"]
+            model_name = str(prediction["model_name"])
+            predicted_p1 = 100.0 * aggregate_p1(model_predictions)
+            error = predicted_p1 - 100.0 * observed_p1
+            rows.append(
+                {
+                    "year": year,
+                    "model_name": model_name,
+                    "candidate_count": int(prediction["candidate_count"]),
+                    "predicted_P1_percent": predicted_p1,
+                    "observed_P1_percent": 100.0 * observed_p1,
+                    "error_pp": error,
+                    "absolute_error_pp": abs(error),
+                    "predicted_occurrence_rate": prediction[
+                        "predicted_occurrence_rate"
+                    ],
+                    "observed_occurrence_rate": observed_occurrence_rate,
+                    "predicted_conditional_growth_percent": prediction[
+                        "predicted_conditional_growth_percent"
+                    ],
+                    "observed_conditional_growth_percent": observed_conditional_growth,
+                }
+            )
+
+    results = pd.DataFrame(rows, columns=P1_TOURNAMENT_COLUMNS)
+    return results, _p1_tournament_summary(results)

@@ -53,6 +53,15 @@ def aggregate_p1(predictions: pd.DataFrame) -> float:
     """Return the foundation P1 aggregate: median of ``p_i * g_i``."""
     if not set(PREDICTION_COLUMNS).issubset(predictions.columns):
         raise ValueError(f"predictions must contain {PREDICTION_COLUMNS}.")
+    expected_contributions = (
+        predictions["p_i"].to_numpy(dtype=float)
+        * predictions["g_i"].to_numpy(dtype=float)
+    )
+    contributions = predictions["contribution_i"].to_numpy(dtype=float)
+    if not np.isfinite(expected_contributions).all() or not np.array_equal(
+        contributions, expected_contributions
+    ):
+        raise ValueError("contribution_i must equal p_i * g_i for every candidate.")
     return aggregate_expected_contribution(
         predictions["p_i"].to_numpy(),
         predictions["g_i"].to_numpy(),
@@ -62,8 +71,8 @@ def aggregate_p1(predictions: pd.DataFrame) -> float:
 class ModelB:
     """Combine hierarchical occurrence and conditional-growth components.
 
-    This wrapper exposes the shared Model B input/output boundary only. Model
-    fitting and both hierarchical prediction algorithms remain unimplemented.
+    Component fitting remains the caller's responsibility so each estimator
+    receives its own foundation-qualified, cutoff-safe training sample.
     """
 
     def __init__(
@@ -90,7 +99,9 @@ class ModelB:
         growth_target: pd.Series,
     ) -> "ModelB":
         """Fit both estimators on separately prepared, cutoff-safe samples."""
-        raise NotImplementedError("Model B fitting is not implemented yet.")
+        self.occurrence_estimator.fit(occurrence_features, occurrence_target)
+        self.growth_estimator.fit(growth_features, growth_target)
+        return self
 
     def predict(
         self,

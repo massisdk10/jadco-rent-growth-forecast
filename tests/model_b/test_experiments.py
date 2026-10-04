@@ -35,11 +35,20 @@ from src.models.model_b.experiments import (
     OCCURRENCE_SHRINKAGE_CANDIDATES,
     OCCURRENCE_SUMMARY_COLUMNS,
     OCCURRENCE_TOURNAMENT_COLUMNS,
+    P1_COMBINATIONS,
+    P1_GROWTH_CONFIG,
+    P1_OCCURRENCE_CONFIG,
+    P1_SUMMARY_COLUMNS,
+    P1_TOURNAMENT_COLUMNS,
     run_growth_tournament,
     run_occurrence_tournament,
+    run_p1_combination_tournament,
 )
-from src.models.model_b.growth import HierarchicalGrowthEstimator
-from src.models.model_b.occurrence import HierarchicalOccurrenceEstimator
+from src.models.model_b.growth import GrowthConfig, HierarchicalGrowthEstimator
+from src.models.model_b.occurrence import (
+    HierarchicalOccurrenceEstimator,
+    OccurrenceConfig,
+)
 
 
 def synthetic_leases() -> pd.DataFrame:
@@ -510,6 +519,246 @@ class GrowthTournamentTests(unittest.TestCase):
         first_results, first_summary = run_growth_tournament(self.leases)
         second_results, second_summary = run_growth_tournament(self.leases)
 
+        assert_frame_equal(first_results, second_results)
+        assert_frame_equal(first_summary, second_summary)
+
+
+class P1CombinationTournamentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.leases = synthetic_leases()
+
+    def run_with_synthetic_previous_year_baseline(self):
+        """Supply a synthetic G0 value where this fixture has no mature 2022 label."""
+        from src.models.model_b import experiments
+
+        original = baseline_previous_year
+
+        def baseline_or_fixture_value(train, year, target=MAIN_TARGET):
+            value = original(train, year, target)
+            return value if np.isfinite(value) else 0.025
+
+        with patch.object(
+            experiments,
+            "baseline_previous_year",
+            baseline_or_fixture_value,
+        ):
+            return run_p1_combination_tournament(self.leases)
+
+    def test_result_schema_and_four_shortlisted_combinations(self):
+        results, summary = self.run_with_synthetic_previous_year_baseline()
+
+        self.assertEqual(tuple(results.columns), P1_TOURNAMENT_COLUMNS)
+        self.assertEqual(tuple(summary.columns), P1_SUMMARY_COLUMNS)
+        self.assertEqual(len(results), len(BACKTEST_YEARS) * 4)
+        self.assertEqual(len(summary), 4)
+        self.assertEqual(set(results["year"]), set(BACKTEST_YEARS))
+        self.assertEqual(set(results["model_name"]), set(P1_COMBINATIONS))
+        self.assertFalse(
+            results.duplicated(["year", "model_name"]).any()
+        )
+        self.assertTrue(
+            results.groupby("year")["candidate_count"].nunique().eq(1).all()
+        )
+        for column in P1_TOURNAMENT_COLUMNS:
+            if column not in ("model_name",):
+                self.assertTrue(pd.api.types.is_numeric_dtype(results[column]))
+
+    def test_shortlisted_hierarchy_and_shrinkage_settings_are_fixed(self):
+        occurrence_configs = []
+        growth_configs = []
+        original_occurrence_fit = HierarchicalOccurrenceEstimator.fit
+        original_growth_fit = HierarchicalGrowthEstimator.fit
+
+        def capture_occurrence_fit(estimator, features, target):
+            occurrence_configs.append(estimator.config)
+            return original_occurrence_fit(estimator, features, target)
+
+        def capture_growth_fit(estimator, features, target):
+            growth_configs.append(estimator.config)
+            return original_growth_fit(estimator, features, target)
+
+        with (
+            patch.object(
+                HierarchicalOccurrenceEstimator, "fit", capture_occurrence_fit
+            ),
+            patch.object(
+                HierarchicalGrowthEstimator, "fit", capture_growth_fit
+            ),
+        ):
+            self.run_with_synthetic_previous_year_baseline()
+
+        self.assertEqual(occurrence_configs, [P1_OCCURRENCE_CONFIG] * 3)
+        self.assertEqual(growth_configs, [P1_GROWTH_CONFIG] * 3)
+        self.assertEqual(
+            P1_OCCURRENCE_CONFIG,
+            OccurrenceConfig(
+                hierarchy=(("province",), ("province", "expiry_month")),
+                shrinkage_strength=20.0,
+            ),
+        )
+        self.assertEqual(
+            P1_GROWTH_CONFIG,
+            GrowthConfig(
+                hierarchy=(("province",),),
+                shrinkage_strength=1.0,
+            ),
+        )
+
+    def test_only_cutoff_qualified_historical_labels_enter_fitting(self):
+        occurrence_fits = []
+        growth_fits = []
+        original_occurrence_fit = HierarchicalOccurrenceEstimator.fit
+        original_growth_fit = HierarchicalGrowthEstimator.fit
+
+        def capture_occurrence_fit(estimator, features, target):
+            occurrence_fits.append((features.copy(), target.copy()))
+            return original_occurrence_fit(estimator, features, target)
+
+        def capture_growth_fit(estimator, features, target):
+            growth_fits.append((features.copy(), target.copy()))
+            return original_growth_fit(estimator, features, target)
+
+        with (
+            patch.object(
+                HierarchicalOccurrenceEstimator, "fit", capture_occurrence_fit
+            ),
+            patch.object(
+                HierarchicalGrowthEstimator, "fit", capture_growth_fit
+            ),
+        ):
+            self.run_with_synthetic_previous_year_baseline()
+
+        self.assertEqual(len(occurrence_fits), len(BACKTEST_YEARS))
+        self.assertEqual(len(growth_fits), len(BACKTEST_YEARS))
+        for year, (occ_features, occ_target), (growth_features, growth_target) in zip(
+            BACKTEST_YEARS, occurrence_fits, growth_fits
+        ):
+            history = occurrence_history(self.leases, year)
+            qualified = history["occurrence_target"].notna()
+            assert_frame_equal(
+                occ_features.reset_index(drop=True),
+                history.loc[qualified, list(occ_features.columns)].reset_index(
+                    drop=True
+                ),
+            )
+            pd.testing.assert_series_equal(
+                occ_target.reset_index(drop=True),
+                history.loc[qualified, "occurrence_target"]
+                .astype(float)
+                .reset_index(drop=True),
+                check_names=False,
+            )
+
+            historical, _ = build_model_dataset(
+                known_leases(self.leases, prediction_origin(year))
+            )
+            growth_train, _ = split_year(historical, year, MAIN_TARGET)
+            self.assertTrue(growth_train["year"].lt(year).all())
+            self.assertTrue(
+                pd.to_datetime(growth_train["label_available_date"])
+                .le(prediction_origin(year))
+                .all()
+            )
+            self.assertEqual(len(growth_features), len(growth_train))
+            np.testing.assert_allclose(
+                np.sort(growth_target.to_numpy(dtype=float)),
+                np.sort(growth_train[MAIN_TARGET].to_numpy(dtype=float)),
+            )
+
+    def test_all_predictions_precede_target_year_outcome_revelation(self):
+        from src.models.model_b import experiments
+
+        events = []
+        original_occurrence_predict = HierarchicalOccurrenceEstimator.predict_proba
+        original_growth_predict = HierarchicalGrowthEstimator.predict
+        original_occurrence_baseline = experiments.predict_occurrence
+        original_growth_baseline = experiments.baseline_previous_year
+        original_reveal = experiments.reveal_occurrence
+
+        def capture_occurrence_predict(estimator, candidates):
+            events.append("prediction")
+            return original_occurrence_predict(estimator, candidates)
+
+        def capture_growth_predict(estimator, candidates):
+            events.append("prediction")
+            return original_growth_predict(estimator, candidates)
+
+        def capture_occurrence_baseline(*args, **kwargs):
+            events.append("prediction")
+            return original_occurrence_baseline(*args, **kwargs)
+
+        def capture_growth_baseline(*args, **kwargs):
+            events.append("prediction")
+            value = original_growth_baseline(*args, **kwargs)
+            return value if np.isfinite(value) else 0.025
+
+        def capture_reveal(cohort, transitions, year, label_cutoff=None):
+            if label_cutoff is None:
+                events.append("target_reveal")
+            return original_reveal(cohort, transitions, year, label_cutoff)
+
+        with (
+            patch.object(
+                HierarchicalOccurrenceEstimator,
+                "predict_proba",
+                capture_occurrence_predict,
+            ),
+            patch.object(
+                HierarchicalGrowthEstimator, "predict", capture_growth_predict
+            ),
+            patch.object(
+                experiments, "predict_occurrence", capture_occurrence_baseline
+            ),
+            patch.object(
+                experiments,
+                "baseline_previous_year",
+                capture_growth_baseline,
+            ),
+            patch.object(experiments, "reveal_occurrence", capture_reveal),
+        ):
+            run_p1_combination_tournament(self.leases)
+
+        first_reveal = events.index("target_reveal")
+        self.assertEqual(events[:first_reveal].count("prediction"), 12)
+        self.assertFalse("prediction" in events[first_reveal:])
+        self.assertEqual(events.count("target_reveal"), len(BACKTEST_YEARS))
+
+    def test_frozen_baselines_are_used_and_results_are_deterministic(self):
+        from src.models.model_b import experiments
+
+        occurrence_methods = []
+        baseline_years = []
+        original_occurrence_baseline = predict_occurrence
+        original_growth_baseline = baseline_previous_year
+
+        def capture_occurrence_baseline(history, features, method="historical_global"):
+            occurrence_methods.append(method)
+            return original_occurrence_baseline(history, features, method=method)
+
+        def capture_growth_baseline(train, year, target=MAIN_TARGET):
+            baseline_years.append((year, target))
+            value = original_growth_baseline(train, year, target)
+            return value if np.isfinite(value) else 0.025
+
+        with (
+            patch.object(
+                experiments, "predict_occurrence", capture_occurrence_baseline
+            ),
+            patch.object(
+                experiments,
+                "baseline_previous_year",
+                capture_growth_baseline,
+            ),
+        ):
+            first_results, first_summary = run_p1_combination_tournament(
+                self.leases
+            )
+
+        expected = [(year, MAIN_TARGET) for year in BACKTEST_YEARS]
+        self.assertEqual(occurrence_methods, ["historical_global"] * 3)
+        self.assertEqual(baseline_years, expected)
+        second_results, second_summary = self.run_with_synthetic_previous_year_baseline()
         assert_frame_equal(first_results, second_results)
         assert_frame_equal(first_summary, second_summary)
 

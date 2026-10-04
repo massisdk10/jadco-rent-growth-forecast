@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from src.features.model_dataset import MAIN_TARGET
 from src.models.model_b.model import (
     PREDICTION_COLUMNS,
     ModelB,
@@ -22,11 +23,22 @@ class ModelBTests(unittest.TestCase):
         np.testing.assert_allclose(
             predictions["contribution_i"], [0.0, 0.027, 0.04]
         )
+        np.testing.assert_array_equal(
+            predictions["contribution_i"],
+            predictions["p_i"] * predictions["g_i"],
+        )
         self.assertAlmostEqual(aggregate_p1(predictions), 0.027)
         self.assertNotAlmostEqual(
             aggregate_p1(predictions),
             float(predictions["p_i"].median() * predictions["g_i"].median()),
         )
+
+    def test_p1_rejects_contributions_not_equal_to_candidate_products(self):
+        predictions = assemble_predictions([0.5, 0.25], [0.04, 0.08])
+        predictions.loc[0, "contribution_i"] += 0.001
+
+        with self.assertRaises(ValueError):
+            aggregate_p1(predictions)
 
     def test_wrapper_combines_component_predictions(self):
         class OccurrenceStub(HierarchicalOccurrenceEstimator):
@@ -90,13 +102,35 @@ class ModelBTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             model.predict(occurrence, growth)
 
-    def test_fitting_remains_unimplemented(self):
+    def test_fit_trains_both_components_on_aligned_targets(self):
         model = ModelB()
-        empty = pd.DataFrame()
-        labels = pd.Series(dtype=float)
+        index = pd.RangeIndex(4)
+        occurrence_features = pd.DataFrame(
+            {
+                "province": ["Quebec", "Ontario", "Quebec", "Ontario"],
+                "building": ["B1", "B2", "B1", "B2"],
+            },
+            index=index,
+        )
+        occurrence_target = pd.Series([0.0, 1.0, 1.0, 0.0], index=index)
+        growth_features = occurrence_features.copy()
+        growth_target = pd.Series(
+            [-0.01, 0.02, 0.04, 0.03],
+            index=index,
+            name=MAIN_TARGET,
+        )
 
-        with self.assertRaises(NotImplementedError):
-            model.fit(empty, labels, empty, labels)
+        self.assertIs(
+            model.fit(
+                occurrence_features,
+                occurrence_target,
+                growth_features,
+                growth_target,
+            ),
+            model,
+        )
+        predictions = model.predict(occurrence_features, growth_features)
+        self.assertEqual(len(predictions), len(index))
 
 
 if __name__ == "__main__":
