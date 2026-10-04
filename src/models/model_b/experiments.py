@@ -9,13 +9,20 @@ import pandas as pd
 from src.evaluation.backtest import (
     BACKTEST_YEARS,
     aggregate_expected_contribution,
+    baseline_previous_year,
+    baseline_recent_history,
+    evaluate_predictions,
     occurrence_history,
     occurrence_metrics,
     predict_occurrence,
+    split_year,
 )
 from src.features.model_dataset import (
     ADMISSIBLE_FEATURES,
+    MAIN_TARGET,
     OCCURRENCE_FEATURES,
+    UNIT_KEY,
+    build_features,
     build_model_dataset,
     build_occurrence_features,
     build_prediction_cohort,
@@ -24,6 +31,7 @@ from src.features.model_dataset import (
     reveal_occurrence,
     validate_features,
 )
+from src.models.model_b.growth import GrowthConfig, HierarchicalGrowthEstimator
 from src.models.model_b.occurrence import (
     HierarchicalOccurrenceEstimator,
     OccurrenceConfig,
@@ -169,6 +177,230 @@ OCCURRENCE_SUMMARY_COLUMNS = (
     "p1_bias_pp",
     "worst_abs_p1_error_pp",
 )
+
+GROWTH_HIERARCHIES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "G0_global_only": (),
+    "G1_province": (("province",),),
+    "G2_building": (("building",),),
+    "G3_bedrooms": (("bedrooms",),),
+    "G4_province_building": (("province",), ("province", "building")),
+    "G5_building_bedrooms": (("building",), ("building", "bedrooms")),
+    "G6_province_building_bedrooms": (
+        ("province",),
+        ("province", "building"),
+        ("province", "building", "bedrooms"),
+    ),
+}
+GROWTH_SHRINKAGE_CANDIDATES = (1, 2, 5, 10, 20, 50)
+GROWTH_BASELINES = (
+    "mediane_annee_precedente",
+    "mediane_trois_ans",
+)
+GROWTH_TOURNAMENT_COLUMNS = (
+    "year",
+    "hierarchy_name",
+    "shrinkage_strength",
+    "train_count",
+    "test_count",
+    "mae_pp",
+    "rmse_pp",
+    "bias_pp",
+    "predicted_median_growth_percent",
+    "observed_median_growth_percent",
+    "portfolio_error_pp",
+)
+GROWTH_SUMMARY_COLUMNS = (
+    "hierarchy_name",
+    "shrinkage_strength",
+    "mean_mae_pp",
+    "mean_rmse_pp",
+    "mean_abs_bias_pp",
+    "portfolio_mae_pp",
+    "portfolio_rmse_pp",
+    "portfolio_bias_pp",
+    "worst_abs_portfolio_error_pp",
+    "mean_mae_rank",
+    "mean_rmse_rank",
+    "portfolio_mae_rank",
+    "worst_portfolio_error_rank",
+)
+
+
+def _growth_features_for(
+    hierarchy: tuple[tuple[str, ...], ...],
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(feature for level in hierarchy for feature in level))
+
+
+def _growth_model_train(
+    leases: pd.DataFrame,
+    train: pd.DataFrame,
+    year: int,
+    features: tuple[str, ...],
+) -> pd.DataFrame:
+    """Build each historical row's features at its own frozen origin."""
+    parts = []
+    for historical_year, part in train.groupby("year", sort=True):
+        x = build_features(leases, part, int(historical_year), features)
+        x[MAIN_TARGET] = part[MAIN_TARGET].to_numpy()
+        parts.append(x)
+    if not parts:
+        return pd.DataFrame(columns=[*features, MAIN_TARGET])
+    return pd.concat(parts, ignore_index=True)
+
+
+def _growth_summary(results: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for (name, strength), group in results.groupby(
+        ["hierarchy_name", "shrinkage_strength"], dropna=False, sort=False
+    ):
+        portfolio_errors = pd.to_numeric(
+            group["portfolio_error_pp"], errors="coerce"
+        ).dropna()
+        rows.append(
+            {
+                "hierarchy_name": name,
+                "shrinkage_strength": strength,
+                "mean_mae_pp": group["mae_pp"].mean(),
+                "mean_rmse_pp": group["rmse_pp"].mean(),
+                "mean_abs_bias_pp": group["bias_pp"].abs().mean(),
+                "portfolio_mae_pp": portfolio_errors.abs().mean(),
+                "portfolio_rmse_pp": (
+                    float(np.sqrt(np.mean(np.square(portfolio_errors))))
+                    if not portfolio_errors.empty
+                    else np.nan
+                ),
+                "portfolio_bias_pp": portfolio_errors.mean(),
+                "worst_abs_portfolio_error_pp": portfolio_errors.abs().max(),
+            }
+        )
+    summary = pd.DataFrame(rows)
+    rank_columns = {
+        "mean_mae_pp": "mean_mae_rank",
+        "mean_rmse_pp": "mean_rmse_rank",
+        "portfolio_mae_pp": "portfolio_mae_rank",
+        "worst_abs_portfolio_error_pp": "worst_portfolio_error_rank",
+    }
+    for metric, rank in rank_columns.items():
+        summary[rank] = summary[metric].rank(
+            method="min", ascending=True, na_option="bottom"
+        ).astype("Int64")
+    return summary.loc[:, list(GROWTH_SUMMARY_COLUMNS)]
+
+
+def run_growth_tournament(
+    leases: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run the fixed, cutoff-safe 2023-2025 conditional-growth tournament.
+
+    Training eligibility, historical feature origins, prediction cohorts,
+    target-year evaluation, metrics, and baseline definitions are delegated
+    to the frozen foundation helpers. All Model B predictions for all folds
+    are fixed before any target-year evaluation rows are selected.
+    """
+    evaluation_data, _ = build_model_dataset(leases)
+    prediction_rows: list[dict[str, object]] = []
+    baseline_functions = {
+        "previous_year_median_baseline": baseline_previous_year,
+        "rolling_historical_median_baseline": baseline_recent_history,
+    }
+
+    for year in BACKTEST_YEARS:
+        historical, _ = build_model_dataset(
+            known_leases(leases, prediction_origin(year))
+        )
+        train, _ = split_year(historical, year, MAIN_TARGET)
+        if train.empty:
+            raise ValueError(
+                f"No eligible historical growth labels for prediction year {year}."
+            )
+        cohort = build_prediction_cohort(leases, year)
+
+        for hierarchy_name, hierarchy in GROWTH_HIERARCHIES.items():
+            features = _growth_features_for(hierarchy)
+            model_train = _growth_model_train(leases, train, year, features)
+            candidate_features = build_features(leases, cohort, year, features)
+            for strength in GROWTH_SHRINKAGE_CANDIDATES:
+                estimator = HierarchicalGrowthEstimator(
+                    GrowthConfig(
+                        hierarchy=hierarchy,
+                        shrinkage_strength=float(strength),
+                    )
+                )
+                estimator.fit(
+                    model_train.loc[:, list(features)],
+                    model_train[MAIN_TARGET].rename(MAIN_TARGET),
+                )
+                predictions = estimator.predict(candidate_features)
+                prediction_rows.append(
+                    {
+                        "year": year,
+                        "hierarchy_name": hierarchy_name,
+                        "shrinkage_strength": float(strength),
+                        "train_count": len(model_train),
+                        "cohort": cohort.loc[:, list(UNIT_KEY)].copy(),
+                        "predictions": predictions,
+                    }
+                )
+
+        for baseline_name, baseline_function in baseline_functions.items():
+            baseline_value = baseline_function(train, year, MAIN_TARGET)
+            prediction_rows.append(
+                {
+                    "year": year,
+                    "hierarchy_name": baseline_name,
+                    "shrinkage_strength": np.nan,
+                    "train_count": len(train),
+                    "cohort": cohort.loc[:, list(UNIT_KEY)].copy(),
+                    "predictions": np.full(len(cohort), baseline_value, dtype=float),
+                }
+            )
+
+    result_rows: list[dict[str, object]] = []
+    for prediction in prediction_rows:
+        year = int(prediction["year"])
+        cohort = prediction["cohort"]
+        predicted = cohort.copy()
+        predicted["_prediction"] = prediction["predictions"]
+        _, test = split_year(evaluation_data, year, MAIN_TARGET)
+        observed = test.merge(
+            predicted,
+            on=list(UNIT_KEY),
+            how="inner",
+            validate="many_to_one",
+        )
+        metrics = (
+            evaluate_predictions(
+                observed, observed["_prediction"].to_numpy(dtype=float), MAIN_TARGET
+            )
+            if not observed.empty
+            and np.isfinite(
+                observed["_prediction"].to_numpy(dtype=float)
+            ).all()
+            else {}
+        )
+        result_rows.append(
+            {
+                "year": year,
+                "hierarchy_name": prediction["hierarchy_name"],
+                "shrinkage_strength": prediction["shrinkage_strength"],
+                "train_count": prediction["train_count"],
+                "test_count": len(observed),
+                "mae_pp": metrics.get("MAE_pp", np.nan),
+                "rmse_pp": metrics.get("RMSE_pp", np.nan),
+                "bias_pp": metrics.get("bias_pp", np.nan),
+                "predicted_median_growth_percent": metrics.get(
+                    "predicted_growth_pct", np.nan
+                ),
+                "observed_median_growth_percent": metrics.get(
+                    "observed_growth_pct", np.nan
+                ),
+                "portfolio_error_pp": metrics.get("portfolio_error_pp", np.nan),
+            }
+        )
+
+    results = pd.DataFrame(result_rows, columns=GROWTH_TOURNAMENT_COLUMNS)
+    return results, _growth_summary(results)
 
 
 def _qualified_training(history: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
