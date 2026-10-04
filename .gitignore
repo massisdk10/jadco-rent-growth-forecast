@@ -4,6 +4,8 @@
 data/raw/
 data/processed/
 *.csv
+# Exception unique : signaux externes publics, sans données CRM
+!/data/external/external_signals.csv
 
 # Environment / secrets
 .env
